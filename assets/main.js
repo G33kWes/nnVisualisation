@@ -47,7 +47,7 @@ async function initializeVisualizer() {
   });
 
   if (typeof window !== "undefined") {
-    // Expose scene instance for interactive debugging in DevTools.
+    // Expose scene instance for interactive inspection in DevTools.
     window.neuralScene = neuralScene;
   }
 
@@ -73,11 +73,7 @@ async function initializeVisualizer() {
     const probabilities = softmax(Array.from(logitsTyped));
     probabilityPanel.update(probabilities);
 
-    if (typeof window !== "undefined") {
-      const scene = window.neuralScene;
-      const outputLayer = scene?.layerMeshes?.[scene.layerMeshes.length - 1];
-      console.log("Output layer colors", outputLayer?.mesh?.instanceColor?.array);
-    }
+    // No noisy debug logs; visual updates are visible in-scene
   }
 
   digitCanvas.setChangeHandler(() => refreshNetworkState());
@@ -450,7 +446,6 @@ class NeuralVisualizer {
     this.scene.background = new THREE.Color(0xffffff);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(this.renderer.domElement);
