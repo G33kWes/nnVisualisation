@@ -725,22 +725,12 @@ class NeuralVisualizer {
     group.connections.forEach((connection, index) => {
       const normalized = clamp(contributions[index] / scale, -1, 1);
       const magnitude = Math.abs(normalized);
-      if (magnitude < 0.01) {
-        this.tempColor.setRGB(0.12, 0.14, 0.2);
+      if (magnitude < 1e-3) {
+        this.tempColor.setRGB(0, 0, 0);
       } else if (normalized >= 0) {
-        const t = magnitude;
-        this.tempColor.setRGB(
-          lerp(0.38, 1.0, t),
-          lerp(0.45, 0.95, t),
-          lerp(0.25, 0.6, t),
-        );
+        this.tempColor.setRGB(0, magnitude, 0);
       } else {
-        const t = magnitude;
-        this.tempColor.setRGB(
-          lerp(0.12, 0.38, t),
-          lerp(0.2, 0.48, t),
-          lerp(0.5, 1.0, t),
-        );
+        this.tempColor.setRGB(magnitude, 0, 0);
       }
       group.mesh.setColorAt(index, this.tempColor);
     });
@@ -765,10 +755,6 @@ class NeuralVisualizer {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
 }
 
 function softmax(values) {
