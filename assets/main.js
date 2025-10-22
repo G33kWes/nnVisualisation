@@ -7,6 +7,7 @@ const VISUALIZER_CONFIG = {
   inputNodeSize: 0.18,
   hiddenNodeRadius: 0.22,
   connectionRadius: 0.005,
+  connectionWeightThreshold: 0,
   showFpsOverlay: true,
   brush: {
     drawRadius: 1.4,
@@ -62,6 +63,7 @@ async function initializeVisualizer() {
     inputNodeSize: VISUALIZER_CONFIG.inputNodeSize,
     hiddenNodeRadius: VISUALIZER_CONFIG.hiddenNodeRadius,
     connectionRadius: VISUALIZER_CONFIG.connectionRadius,
+    connectionWeightThreshold: VISUALIZER_CONFIG.connectionWeightThreshold,
     showFpsOverlay: VISUALIZER_CONFIG.showFpsOverlay,
     onNeuronFocusChange: (payload) => neuronDetailPanel.update(payload),
   });
@@ -100,7 +102,7 @@ async function initializeVisualizer() {
   initializeAdvancedSettings({
     neuralScene,
     digitCanvas,
-    onConnectionsLimitChange() {
+    onConnectionsSettingsChange() {
       refreshNetworkState();
     },
   });
@@ -148,7 +150,7 @@ function initializeInfoDialog() {
   });
 }
 
-function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLimitChange } = {}) {
+function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsSettingsChange } = {}) {
   const button = document.getElementById("advancedSettingsButton");
   const modal = document.getElementById("advancedSettingsModal");
   const closeButton = document.getElementById("closeAdvancedSettings");
@@ -156,17 +158,28 @@ function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLim
 
   const connectionSlider = document.getElementById("connectionLimitSlider");
   const connectionValue = document.getElementById("connectionLimitValue");
+  const connectionThresholdSlider = document.getElementById("connectionThresholdSlider");
+  const connectionThresholdValue = document.getElementById("connectionThresholdValue");
   const connectionThicknessSlider = document.getElementById("connectionThicknessSlider");
   const connectionThicknessValue = document.getElementById("connectionThicknessValue");
   const thicknessSlider = document.getElementById("brushThicknessSlider");
   const thicknessValue = document.getElementById("brushThicknessValue");
   const strengthSlider = document.getElementById("brushStrengthSlider");
   const strengthValue = document.getElementById("brushStrengthValue");
+  let refreshConnectionThresholdBounds = null;
 
-  const focusTarget = connectionSlider || thicknessSlider || strengthSlider;
+  const focusTarget =
+    connectionSlider ||
+    connectionThresholdSlider ||
+    connectionThicknessSlider ||
+    thicknessSlider ||
+    strengthSlider;
 
   const showModal = () => {
     modal.classList.add("visible");
+    if (typeof refreshConnectionThresholdBounds === "function") {
+      refreshConnectionThresholdBounds();
+    }
     window.requestAnimationFrame(() => {
       if (focusTarget && typeof focusTarget.focus === "function") {
         try {
@@ -228,8 +241,8 @@ function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLim
       if (!emit) return;
       const changed = neuralScene.setMaxConnectionsPerNeuron(clamped);
       if (changed) {
-        if (typeof onConnectionsLimitChange === "function") {
-          onConnectionsLimitChange(clamped);
+        if (typeof onConnectionsSettingsChange === "function") {
+          onConnectionsSettingsChange(clamped);
         }
         VISUALIZER_CONFIG.maxConnectionsPerNeuron = clamped;
       }
@@ -248,6 +261,91 @@ function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLim
     connectionSlider.disabled = true;
     if (connectionValue) {
       connectionValue.textContent = "—";
+    }
+  }
+
+  if (connectionThresholdSlider && connectionThresholdValue && neuralScene) {
+    const min = Math.max(0, Number.parseFloat(connectionThresholdSlider.min) || 0);
+    const fallbackMaxAttr = Number.parseFloat(connectionThresholdSlider.getAttribute("max"));
+    const computeSceneMaxMagnitude = () => {
+      if (typeof neuralScene.getMaxConnectionWeightMagnitude === "function") {
+        const sceneValue = neuralScene.getMaxConnectionWeightMagnitude();
+        if (Number.isFinite(sceneValue)) {
+          return sceneValue;
+        }
+      }
+      let maxMagnitude = 0;
+      if (Array.isArray(neuralScene.mlp?.layers)) {
+        for (const layer of neuralScene.mlp.layers) {
+          if (!Array.isArray(layer?.weights)) continue;
+          for (const row of layer.weights) {
+            if (!Array.isArray(row)) continue;
+            for (const weight of row) {
+              const magnitude = Math.abs(Number(weight));
+              if (Number.isFinite(magnitude) && magnitude > maxMagnitude) {
+                maxMagnitude = magnitude;
+              }
+            }
+          }
+        }
+      }
+      return maxMagnitude;
+    };
+    const updateThresholdSliderBounds = () => {
+      const sceneMax = computeSceneMaxMagnitude();
+      const fallback = Number.isFinite(fallbackMaxAttr) ? fallbackMaxAttr : 0;
+      const resolved = Math.max(sceneMax || 0, fallback, 0.01);
+      connectionThresholdSlider.max = String(resolved);
+      return resolved;
+    };
+    const formatThreshold = (value) => {
+      if (!Number.isFinite(value)) return "0.0000";
+      if (value >= 1) return value.toFixed(2);
+      if (value >= 0.1) return value.toFixed(3);
+      if (value >= 0.01) return value.toFixed(4);
+      return value.toFixed(5);
+    };
+    const syncThresholdUi = (value) => {
+      connectionThresholdSlider.value = String(value);
+      connectionThresholdValue.textContent = formatThreshold(value);
+    };
+    const applyConnectionThreshold = (rawValue, { emit = true } = {}) => {
+      const max = updateThresholdSliderBounds();
+      let parsed = Number.parseFloat(rawValue);
+      if (!Number.isFinite(parsed)) {
+        parsed = neuralScene.options.connectionWeightThreshold ?? 0;
+      }
+      const clamped = clamp(parsed, min, max);
+      syncThresholdUi(clamped);
+      if (!emit) return;
+      const changed = neuralScene.setConnectionWeightThreshold(clamped);
+      if (changed) {
+        VISUALIZER_CONFIG.connectionWeightThreshold = clamped;
+        if (typeof onConnectionsSettingsChange === "function") {
+          onConnectionsSettingsChange(clamped);
+        }
+      }
+    };
+    const initialThreshold = Number.isFinite(neuralScene.options.connectionWeightThreshold)
+      ? Math.max(min, neuralScene.options.connectionWeightThreshold)
+      : Math.max(min, VISUALIZER_CONFIG.connectionWeightThreshold);
+    updateThresholdSliderBounds();
+    applyConnectionThreshold(initialThreshold, { emit: false });
+
+    connectionThresholdSlider.addEventListener("input", (event) => {
+      applyConnectionThreshold(event.target.value);
+    });
+    connectionThresholdSlider.addEventListener("change", (event) => {
+      applyConnectionThreshold(event.target.value);
+    });
+
+    refreshConnectionThresholdBounds = () => {
+      applyConnectionThreshold(connectionThresholdSlider.value, { emit: false });
+    };
+  } else if (connectionThresholdSlider) {
+    connectionThresholdSlider.disabled = true;
+    if (connectionThresholdValue) {
+      connectionThresholdValue.textContent = "—";
     }
   }
 
@@ -1358,6 +1456,7 @@ class NeuralVisualizer {
         hiddenNodeRadius: 0.22,
         maxConnectionsPerNeuron: 24,
         connectionRadius: 0.005,
+        connectionWeightThreshold: 0,
         outputLabelOffset: 0.65,
         outputLabelScale: 0.48,
         showFpsOverlay: false,
@@ -1385,6 +1484,7 @@ class NeuralVisualizer {
     this.selectionConnectionRadiusMultiplier = 1.2;
     this.selectionConnectionData = null;
     this.selectionGlowSprite = null;
+    this.maxConnectionWeightMagnitude = 0;
     this.raycaster = new THREE.Raycaster();
     this.pointerVector = new THREE.Vector2();
     this.pointerDown = null;
@@ -1563,6 +1663,7 @@ class NeuralVisualizer {
     });
 
     const createMesh = (connections) => {
+      if (!connections.length) return null;
       const mesh = new THREE.InstancedMesh(baseGeometry.clone(), connectionMaterial.clone(), connections.length);
       mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
       const colorAttribute = new THREE.InstancedBufferAttribute(new Float32Array(connections.length * 3), 3);
@@ -1645,6 +1746,7 @@ class NeuralVisualizer {
     const targetPosition = targetLayerMesh?.positions?.[neuronIndex];
     const incoming = [];
     const outgoing = [];
+    const minMagnitude = Math.max(0, this.options.connectionWeightThreshold ?? 0);
     let bias = null;
     let previousLayerSize = null;
     let nextLayerSize = null;
@@ -1659,12 +1761,15 @@ class NeuralVisualizer {
         for (let sourceIndex = 0; sourceIndex < weights.length; sourceIndex += 1) {
           const sourcePosition = prevLayerMesh?.positions?.[sourceIndex];
           if (!sourcePosition) continue;
+          const weight = Number(weights[sourceIndex]);
+          if (!Number.isFinite(weight)) continue;
+          if (Math.abs(weight) < minMagnitude) continue;
           incoming.push({
             sourceLayer: layerIndex - 1,
             targetLayer: layerIndex,
             sourceIndex,
             targetIndex: neuronIndex,
-            weight: weights[sourceIndex] ?? 0,
+            weight,
             sourcePosition,
             targetPosition,
           });
@@ -1683,12 +1788,15 @@ class NeuralVisualizer {
         if (!row || sourcePosition == null) continue;
         const targetPosition = nextLayerMesh?.positions?.[targetIndex];
         if (!targetPosition) continue;
+        const weight = Number(row[neuronIndex]);
+        if (!Number.isFinite(weight)) continue;
+        if (Math.abs(weight) < minMagnitude) continue;
         outgoing.push({
           sourceLayer: layerIndex,
           targetLayer: layerIndex + 1,
           sourceIndex: neuronIndex,
           targetIndex,
-          weight: row[neuronIndex] ?? 0,
+          weight,
           sourcePosition,
           targetPosition,
         });
@@ -2108,6 +2216,7 @@ class NeuralVisualizer {
   }
 
   buildConnections() {
+    this.maxConnectionWeightMagnitude = 0;
     const connectionRadius = this.options.connectionRadius ?? 0.005;
     const baseGeometry = new THREE.CylinderGeometry(connectionRadius, connectionRadius, 1, 10, 1, true);
     const material = new THREE.MeshLambertMaterial();
@@ -2115,6 +2224,9 @@ class NeuralVisualizer {
 
     this.mlp.layers.forEach((layer, layerIndex) => {
       const { selected, maxAbsWeight } = this.findImportantConnections(layer);
+      if (Number.isFinite(maxAbsWeight) && maxAbsWeight > this.maxConnectionWeightMagnitude) {
+        this.maxConnectionWeightMagnitude = maxAbsWeight;
+      }
       if (!selected.length) return;
 
       // Clone geometry per mesh so instanceColor can be bound independently
@@ -2208,8 +2320,22 @@ class NeuralVisualizer {
     return true;
   }
 
+  setConnectionWeightThreshold(threshold) {
+    if (!Number.isFinite(threshold)) return false;
+    const clamped = Math.max(0, threshold);
+    if (Math.abs(clamped - (this.options.connectionWeightThreshold ?? 0)) < 1e-6) return false;
+    this.options.connectionWeightThreshold = clamped;
+    this.updateNetworkWeights();
+    return true;
+  }
+
+  getMaxConnectionWeightMagnitude() {
+    return this.maxConnectionWeightMagnitude || 0;
+  }
+
   findImportantConnections(layer) {
     const limit = this.options.maxConnectionsPerNeuron;
+    const minMagnitude = Math.max(0, this.options.connectionWeightThreshold ?? 0);
     const selected = [];
     let maxAbsWeight = 0;
     for (let target = 0; target < layer.weights.length; target += 1) {
@@ -2225,10 +2351,12 @@ class NeuralVisualizer {
       candidates.sort((a, b) => b.magnitude - a.magnitude);
       const take = Math.min(limit, candidates.length);
       for (let i = 0; i < take; i += 1) {
+        const candidate = candidates[i];
+        if (candidate.magnitude < minMagnitude) break;
         selected.push({
-          sourceIndex: candidates[i].sourceIndex,
-          targetIndex: candidates[i].targetIndex,
-          weight: candidates[i].weight,
+          sourceIndex: candidate.sourceIndex,
+          targetIndex: candidate.targetIndex,
+          weight: candidate.weight,
         });
       }
     }

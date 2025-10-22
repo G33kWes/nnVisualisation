@@ -191,6 +191,25 @@
                     </p>
                 </div>
                 <div class="advanced-control">
+                    <label for="connectionThresholdSlider" class="advanced-label">
+                        Schwache Verbindungen ausblenden
+                    </label>
+                    <div class="advanced-slider">
+                        <input
+                            id="connectionThresholdSlider"
+                            type="range"
+                            min="0"
+                            max="0.5"
+                            step="0.0005"
+                            value="0"
+                        >
+                        <span id="connectionThresholdValue" class="advanced-value">0.0000</span>
+                    </div>
+                    <p class="advanced-hint">
+                        Blendet Verbindungen mit geringer absoluter Gewichtung aus; 0 zeigt alle Verbindungen.
+                    </p>
+                </div>
+                <div class="advanced-control">
                     <label for="connectionThicknessSlider" class="advanced-label">
                         Verbindungsdicke
                     </label>
