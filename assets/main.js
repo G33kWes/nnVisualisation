@@ -18,12 +18,156 @@ const VISUALIZER_CONFIG = {
   },
 };
 
+const MNIST_SAMPLE_MANIFEST_URL = "./assets/data/mnist-test-manifest.json";
+
 document.addEventListener("DOMContentLoaded", () => {
   initializeVisualizer().catch((error) => {
     console.error(error);
     renderErrorMessage("Visualisierung konnte nicht initialisiert werden. Details finden Sie in der Konsole.");
   });
 });
+
+async function loadMnistTestSamples(manifestPath = MNIST_SAMPLE_MANIFEST_URL) {
+  const manifestUrl = new URL(manifestPath, window.location.href);
+  const manifestResponse = await fetch(manifestUrl.toString());
+  if (!manifestResponse.ok) {
+    throw new Error(`Konnte MNIST-Manifest nicht laden (${manifestResponse.status}).`);
+  }
+  const manifest = await manifestResponse.json();
+  const rows = Number(manifest?.imageShape?.[0]) || 28;
+  const cols = Number(manifest?.imageShape?.[1]) || 28;
+  const numSamples = Number(manifest?.numSamples) || 0;
+  const sampleSize = rows * cols;
+  const imageFile = manifest?.image?.file;
+  const labelFile = manifest?.labels?.file;
+  if (!imageFile || !labelFile) {
+    throw new Error("Manifest enthält keine gültigen Dateipfade für Bilder oder Labels.");
+  }
+
+  const [imageBuffer, labelBuffer] = await Promise.all([
+    fetch(new URL(imageFile, manifestUrl).toString()).then((response) => {
+      if (!response.ok) {
+        throw new Error(`Konnte MNIST-Bilddaten nicht laden (${response.status}).`);
+      }
+      return response.arrayBuffer();
+    }),
+    fetch(new URL(labelFile, manifestUrl).toString()).then((response) => {
+      if (!response.ok) {
+        throw new Error(`Konnte MNIST-Labeldaten nicht laden (${response.status}).`);
+      }
+      return response.arrayBuffer();
+    }),
+  ]);
+
+  const imageBytes = new Uint8Array(imageBuffer);
+  const labelBytes = new Uint8Array(labelBuffer);
+  if (numSamples <= 0) {
+    if (sampleSize > 0) {
+      const inferredSamples = Math.floor(imageBytes.length / sampleSize);
+      if (inferredSamples <= 0) {
+        throw new Error("Aus den MNIST-Bilddaten konnte keine Stichprobengröße abgeleitet werden.");
+      }
+      if (labelBytes.length !== inferredSamples) {
+        throw new Error("Anzahl der Labels stimmt nicht mit den abgeleiteten Stichproben überein.");
+      }
+    } else {
+      throw new Error("Manifest enthält keine gültige Stichprobengröße.");
+    }
+  }
+
+  const totalSamples = numSamples > 0 ? numSamples : Math.floor(imageBytes.length / sampleSize);
+  if (imageBytes.length !== totalSamples * sampleSize) {
+    throw new Error("MNIST-Bilddatenlänge stimmt nicht mit der erwarteten Größe überein.");
+  }
+  if (labelBytes.length !== totalSamples) {
+    throw new Error("MNIST-Labeldatenlänge stimmt nicht mit der erwarteten Größe überein.");
+  }
+
+  const digitBuckets = Array.from({ length: 10 }, () => []);
+  for (let index = 0; index < totalSamples; index += 1) {
+    const digit = labelBytes[index];
+    if (digitBuckets[digit]) {
+      digitBuckets[digit].push(index);
+    }
+  }
+
+  const pixelCache = new Map();
+  const normaliseSlice = (index) => {
+    if (pixelCache.has(index)) {
+      return pixelCache.get(index);
+    }
+    const start = index * sampleSize;
+    const slice = imageBytes.subarray(start, start + sampleSize);
+    const normalized = new Float32Array(sampleSize);
+    for (let i = 0; i < sampleSize; i += 1) {
+      normalized[i] = slice[i] / 255;
+    }
+    pixelCache.set(index, normalized);
+    return normalized;
+  };
+
+  return {
+    rows,
+    cols,
+    sampleSize,
+    totalSamples,
+    getRandomSample(digit) {
+      if (!Number.isInteger(digit) || digit < 0 || digit > 9) return null;
+      const bucket = digitBuckets[digit];
+      if (!bucket || bucket.length === 0) return null;
+      const randomIndex = bucket[Math.floor(Math.random() * bucket.length)];
+      return this.getSampleByIndex(randomIndex);
+    },
+    getSampleByIndex(index) {
+      if (!Number.isFinite(index) || index < 0 || index >= totalSamples) return null;
+      const pixels = normaliseSlice(index);
+      return {
+        index,
+        digit: labelBytes[index],
+        pixels,
+      };
+    },
+  };
+}
+
+async function setupMnistSampleButtons({ digitCanvas, onSampleApplied, manifestPath } = {}) {
+  if (!digitCanvas || typeof digitCanvas.setPixels !== "function") return null;
+  const interactionRow =
+    typeof digitCanvas.getInteractionRow === "function" ? digitCanvas.getInteractionRow() : null;
+  const gridElement =
+    typeof digitCanvas.getGridElement === "function" ? digitCanvas.getGridElement() : null;
+  if (!interactionRow || !gridElement) return null;
+  let loader;
+  try {
+    loader = await loadMnistTestSamples(manifestPath ?? MNIST_SAMPLE_MANIFEST_URL);
+  } catch (error) {
+    console.warn("MNIST-Testdaten konnten nicht geladen werden:", error);
+    return null;
+  }
+  const column = document.createElement("div");
+  column.className = "digit-button-column";
+  for (let digit = 0; digit < 10; digit += 1) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "digit-button";
+    button.textContent = String(digit);
+    button.setAttribute("aria-label", `Zufällige ${digit} laden`);
+    button.addEventListener("click", () => {
+      const sample = loader.getRandomSample(digit);
+      if (!sample) return;
+      digitCanvas.setPixels(sample.pixels);
+      if (typeof onSampleApplied === "function") {
+        onSampleApplied(sample);
+      }
+  });
+    column.appendChild(button);
+  }
+  interactionRow.appendChild(column);
+  return {
+    loader,
+    column,
+  };
+}
 
 async function initializeVisualizer() {
   initializeInfoDialog();
@@ -129,6 +273,11 @@ async function initializeVisualizer() {
 
     // No noisy debug logs; visual updates are visible in-scene
   }
+
+  await setupMnistSampleButtons({
+    digitCanvas,
+    onSampleApplied: () => refreshNetworkState(),
+  });
 
   initializeAdvancedSettings({
     neuralScene,
@@ -885,6 +1034,7 @@ class DigitSketchPad {
     this.activeMode = "draw";
     this.onChange = null;
     this.pendingChange = false;
+    this.interactionRow = null;
     const defaultBrush = {
       drawRadius: 1.2,
       eraseRadius: 1.2,
@@ -914,8 +1064,11 @@ class DigitSketchPad {
     const title = document.createElement("div");
     title.className = "grid-title";
     title.textContent = "Ziffer zeichnen";
+    this.interactionRow = document.createElement("div");
+    this.interactionRow.className = "grid-interaction-row";
+    this.interactionRow.appendChild(this.gridElement);
     this.container.appendChild(title);
-    this.container.appendChild(this.gridElement);
+    this.container.appendChild(this.interactionRow);
 
     this.gridElement.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
     this.gridElement.addEventListener("pointermove", (event) => this.handlePointerMove(event));
@@ -1053,6 +1206,27 @@ class DigitSketchPad {
     return Float32Array.from(this.values);
   }
 
+  setPixels(pixels) {
+    if (!pixels || typeof pixels.length !== "number") {
+      throw new Error("Ungültige Pixelwerte für den Zeichenblock.");
+    }
+    if (pixels.length !== this.values.length) {
+      throw new Error(
+        `Erwartete ${this.values.length} Pixel, erhielt aber ${pixels.length}.`,
+      );
+    }
+    for (let i = 0; i < this.values.length; i += 1) {
+      const value = clamp(Number(pixels[i]) || 0, 0, 1);
+      if (this.values[i] !== value) {
+        this.values[i] = value;
+        this.updateCellVisual(i);
+      }
+    }
+    if (typeof this.onChange === "function") {
+      this.onChange();
+    }
+  }
+
   clear() {
     this.values.fill(0);
     for (let i = 0; i < this.cells.length; i += 1) {
@@ -1061,6 +1235,14 @@ class DigitSketchPad {
     if (typeof this.onChange === "function") {
       this.onChange();
     }
+  }
+
+  getInteractionRow() {
+    return this.interactionRow;
+  }
+
+  getGridElement() {
+    return this.gridElement;
   }
 }
 

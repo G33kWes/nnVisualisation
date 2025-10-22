@@ -2,3 +2,4 @@
 releases/
 data/MNIST/
 .venv
+tools/mnist_assets/__pycache__/

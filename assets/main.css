@@ -47,7 +47,13 @@ body > canvas {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  align-items: center;
+  align-items: stretch;
+}
+
+.grid-interaction-row {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
 }
 
 .grid-title {
@@ -82,6 +88,41 @@ body > canvas {
 
 .grid-cell.active {
   box-shadow: 0 0 12px rgba(91, 160, 255, 0.65);
+}
+
+.digit-button-column {
+  display: grid;
+  grid-template-rows: repeat(10, 1fr);
+  gap: 8px;
+  width: 52px;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.digit-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(140deg, rgba(91, 160, 255, 0.9), rgba(59, 130, 246, 0.9));
+  border: 1px solid rgba(91, 160, 255, 0.4);
+  border-radius: 12px;
+  color: #f8fbff;
+  font-weight: 600;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  box-shadow: 0 10px 24px rgba(37, 99, 235, 0.3);
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.2s ease;
+}
+
+.digit-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 28px rgba(59, 130, 246, 0.4);
+}
+
+.digit-button:active {
+  transform: translateY(1px);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.35);
 }
 
 .reset-button-container {
@@ -760,6 +801,23 @@ body > canvas {
   text-align: center;
   color: #fcd34d;
   font-size: 0.95rem;
+}
+
+.github-link {
+  position: fixed;
+  bottom: 4px;
+  right: 12px;
+  z-index: 24;
+  font-size: 0.48rem;
+  letter-spacing: 0.005em;
+  color: rgba(214, 226, 255, 0.6);
+  text-decoration: none;
+  transition: color 140ms ease;
+}
+
+.github-link:hover {
+  color: rgba(255, 255, 255, 0.85);
+  text-decoration: underline;
 }
 
 button {
