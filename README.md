@@ -1,5 +1,7 @@
 # MNIST MLP Visualizer
 
+![MNIST MLP Visualizer screenshot](https://raw.githubusercontent.com/DFin/Neural-Network-Visualisation/refs/heads/main/assets/screenshot.jpg)
+
 Interactive web visualisation for a compact multi-layer perceptron trained on the MNIST handwritten digit dataset. Draw a digit, watch activations propagate through the network in 3D, and inspect real-time prediction probabilities.
 
 ## Repository Layout
