@@ -156,6 +156,8 @@ function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLim
 
   const connectionSlider = document.getElementById("connectionLimitSlider");
   const connectionValue = document.getElementById("connectionLimitValue");
+  const connectionThicknessSlider = document.getElementById("connectionThicknessSlider");
+  const connectionThicknessValue = document.getElementById("connectionThicknessValue");
   const thicknessSlider = document.getElementById("brushThicknessSlider");
   const thicknessValue = document.getElementById("brushThicknessValue");
   const strengthSlider = document.getElementById("brushStrengthSlider");
@@ -246,6 +248,45 @@ function initializeAdvancedSettings({ neuralScene, digitCanvas, onConnectionsLim
     connectionSlider.disabled = true;
     if (connectionValue) {
       connectionValue.textContent = "—";
+    }
+  }
+
+  if (connectionThicknessSlider && connectionThicknessValue && neuralScene) {
+    const min = Number.parseFloat(connectionThicknessSlider.min) || 0.001;
+    const max = Number.parseFloat(connectionThicknessSlider.max) || 0.1;
+    const formatThickness = (value) => `${value.toFixed(3)}`;
+    const syncConnectionThicknessUi = (value) => {
+      connectionThicknessSlider.value = String(value);
+      connectionThicknessValue.textContent = formatThickness(value);
+    };
+    const applyConnectionThickness = (rawValue, { emit = true } = {}) => {
+      let parsed = Number.parseFloat(rawValue);
+      if (!Number.isFinite(parsed)) {
+        parsed = neuralScene.options.connectionRadius;
+      }
+      const clamped = clamp(parsed, min, max);
+      syncConnectionThicknessUi(clamped);
+      if (!emit) return;
+      const changed = neuralScene.setConnectionRadius(clamped);
+      if (changed) {
+        VISUALIZER_CONFIG.connectionRadius = clamped;
+      }
+    };
+    const initialRadius = Number.isFinite(neuralScene.options.connectionRadius)
+      ? clamp(neuralScene.options.connectionRadius, min, max)
+      : clamp(VISUALIZER_CONFIG.connectionRadius, min, max);
+    applyConnectionThickness(initialRadius, { emit: false });
+
+    connectionThicknessSlider.addEventListener("input", (event) => {
+      applyConnectionThickness(event.target.value);
+    });
+    connectionThicknessSlider.addEventListener("change", (event) => {
+      applyConnectionThickness(event.target.value);
+    });
+  } else if (connectionThicknessSlider) {
+    connectionThicknessSlider.disabled = true;
+    if (connectionThicknessValue) {
+      connectionThicknessValue.textContent = "—";
     }
   }
 
@@ -2084,6 +2125,19 @@ class NeuralVisualizer {
     if (!Number.isFinite(clamped)) return false;
     if (clamped === this.options.maxConnectionsPerNeuron) return false;
     this.options.maxConnectionsPerNeuron = clamped;
+    this.updateNetworkWeights();
+    return true;
+  }
+
+  setConnectionRadius(radius) {
+    if (!Number.isFinite(radius)) return false;
+    const clamped = Math.max(0.0005, radius);
+    if (Math.abs(clamped - this.options.connectionRadius) < 1e-6) return false;
+    this.options.connectionRadius = clamped;
+    if (this.selectionCylinderGeometry && typeof this.selectionCylinderGeometry.dispose === "function") {
+      this.selectionCylinderGeometry.dispose();
+    }
+    this.selectionCylinderGeometry = null;
     this.updateNetworkWeights();
     return true;
   }
