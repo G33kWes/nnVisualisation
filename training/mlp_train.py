@@ -17,6 +17,7 @@ from torchvision import datasets, transforms
 
 MNIST_MEAN = 0.1307
 MNIST_STD = 0.3081
+BASE_DATASET_SIZE = 60_000
 
 
 def resolve_device(preferred: str | None = None) -> torch.device:
@@ -147,22 +148,68 @@ def build_network_payload(layers: Sequence[ExportLayer]) -> dict[str, Any]:
 
 
 def build_default_timeline(dataset_size: int) -> list[TimelineMilestone]:
-    approx_spec = [
-        TimelineMilestone("initial", 0, "Initial weights", "initial"),
-        TimelineMilestone("approx_100", 100, "≈100 images", "approx"),
-        TimelineMilestone("approx_1k", 1_000, "≈1k images", "approx"),
-        TimelineMilestone("approx_3k", 3_000, "≈3k images", "approx"),
-        TimelineMilestone("approx_10k", 10_000, "≈10k images", "approx"),
-        TimelineMilestone("approx_30k", 30_000, "≈30k images", "approx"),
+    if dataset_size <= 0:
+        raise ValueError("Dataset must contain at least one example.")
+
+    specs: list[tuple[str, str, str, float, float | None]] = [
+        ("initial", "Initial weights", "initial", 0.0, None),
+        ("approx_50", "≈50 images", "approx", 50 / BASE_DATASET_SIZE, None),
+        ("approx_120", "≈120 images", "approx", 120 / BASE_DATASET_SIZE, None),
+        ("approx_250", "≈250 images", "approx", 250 / BASE_DATASET_SIZE, None),
+        ("approx_500", "≈500 images", "approx", 500 / BASE_DATASET_SIZE, None),
+        ("approx_1k", "≈1k images", "approx", 1_000 / BASE_DATASET_SIZE, None),
+        ("approx_2k", "≈2k images", "approx", 2_000 / BASE_DATASET_SIZE, None),
+        ("approx_3_5k", "≈3.5k images", "approx", 3_500 / BASE_DATASET_SIZE, None),
+        ("approx_5_8k", "≈5.8k images", "approx", 5_800 / BASE_DATASET_SIZE, None),
+        ("approx_8_7k", "≈8.7k images", "approx", 8_700 / BASE_DATASET_SIZE, None),
+        ("approx_13k", "≈13k images", "approx", 13_000 / BASE_DATASET_SIZE, None),
+        ("approx_19_5k", "≈19.5k images", "approx", 19_500 / BASE_DATASET_SIZE, None),
+        ("approx_28_5k", "≈28.5k images", "approx", 28_500 / BASE_DATASET_SIZE, None),
+        ("approx_40k", "≈40k images", "approx", 40_000 / BASE_DATASET_SIZE, None),
+        ("dataset_1x", "1× dataset", "dataset_multiple", 1.0, 1.0),
+        ("approx_80k", "≈80k images", "approx", 80_000 / BASE_DATASET_SIZE, None),
+        ("dataset_1_5x", "1.5× dataset", "dataset_multiple", 1.5, 1.5),
+        ("dataset_2x", "2× dataset", "dataset_multiple", 2.0, 2.0),
+        ("dataset_2_5x", "2.5× dataset", "dataset_multiple", 2.5, 2.5),
+        ("dataset_3x", "3× dataset", "dataset_multiple", 3.0, 3.0),
+        ("dataset_4x", "4× dataset", "dataset_multiple", 4.0, 4.0),
+        ("dataset_5x", "5× dataset", "dataset_multiple", 5.0, 5.0),
+        ("dataset_6_5x", "6.5× dataset", "dataset_multiple", 6.5, 6.5),
+        ("dataset_8_5x", "8.5× dataset", "dataset_multiple", 8.5, 8.5),
+        ("dataset_10x", "10× dataset", "dataset_multiple", 10.0, 10.0),
+        ("dataset_12_5x", "12.5× dataset", "dataset_multiple", 12.5, 12.5),
+        ("dataset_15x", "15× dataset", "dataset_multiple", 15.0, 15.0),
+        ("dataset_17_5x", "17.5× dataset", "dataset_multiple", 17.5, 17.5),
+        ("dataset_20x", "20× dataset", "dataset_multiple", 20.0, 20.0),
+        ("dataset_25x", "25× dataset", "dataset_multiple", 25.0, 25.0),
+        ("dataset_30x", "30× dataset", "dataset_multiple", 30.0, 30.0),
+        ("dataset_35x", "35× dataset", "dataset_multiple", 35.0, 35.0),
+        ("dataset_40x", "40× dataset", "dataset_multiple", 40.0, 40.0),
+        ("dataset_45x", "45× dataset", "dataset_multiple", 45.0, 45.0),
+        ("dataset_50x", "50× dataset", "dataset_multiple", 50.0, 50.0),
     ]
-    multiples = [
-        TimelineMilestone("dataset_1x", dataset_size, "1× dataset", "dataset_multiple", 1.0),
-        TimelineMilestone("dataset_2x", dataset_size * 2, "2× dataset", "dataset_multiple", 2.0),
-        TimelineMilestone("dataset_5x", dataset_size * 5, "5× dataset", "dataset_multiple", 5.0),
-        TimelineMilestone("dataset_10x", dataset_size * 10, "10× dataset", "dataset_multiple", 10.0),
-    ]
-    milestones = approx_spec + multiples
-    milestones.sort(key=lambda item: item.threshold_images)
+
+    milestones: list[TimelineMilestone] = []
+    last_threshold = -1
+    for identifier, label, kind, ratio, dataset_multiple in specs:
+        if ratio <= 0.0:
+            threshold_images = 0
+        else:
+            scaled = dataset_size * ratio
+            threshold_images = max(1, int(round(scaled)))
+        if threshold_images <= last_threshold:
+            threshold_images = last_threshold + 1
+        milestones.append(
+            TimelineMilestone(
+                identifier,
+                threshold_images,
+                label,
+                kind,
+                dataset_multiple,
+            )
+        )
+        last_threshold = threshold_images
+
     return milestones
 
 
