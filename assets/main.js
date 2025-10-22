@@ -1374,7 +1374,7 @@ class NeuralVisualizer {
     this.tempColor = new THREE.Color();
     this.tempQuaternion = new THREE.Quaternion();
     this.upVector = new THREE.Vector3(0, 1, 0);
-    this.highlightColor = new THREE.Color(0.85, 0.95, 1.0);
+    this.highlightColor = new THREE.Color(0x4da6ff);
     this.outputLabels = [];
     this.selectedNeuron = null;
     this.lastDisplayActivations = null;
@@ -1384,6 +1384,7 @@ class NeuralVisualizer {
     this.selectionCylinderGeometry = null;
     this.selectionConnectionRadiusMultiplier = 1.2;
     this.selectionConnectionData = null;
+    this.selectionGlowSprite = null;
     this.raycaster = new THREE.Raycaster();
     this.pointerVector = new THREE.Vector2();
     this.pointerDown = null;
@@ -1523,6 +1524,7 @@ class NeuralVisualizer {
     this.currentSelectionDetail = null;
     this.disposeSelectionConnectionMeshes();
     this.updateConnectionVisibility();
+    this.hideSelectionGlow();
     if (typeof this.focusChangeCallback === "function") {
       this.focusChangeCallback(null);
     }
@@ -1611,6 +1613,7 @@ class NeuralVisualizer {
         });
       }
     }
+    this.updateSelectionGlow();
   }
 
   disposeSelectionConnectionMeshes() {
@@ -1698,12 +1701,82 @@ class NeuralVisualizer {
     return { incoming, outgoing, bias, previousLayerSize, nextLayerSize };
   }
 
+  ensureSelectionGlowSprite() {
+    if (this.selectionGlowSprite) return this.selectionGlowSprite;
+    const size = 256;
+    const canvas = document.createElement("canvas");
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.clearRect(0, 0, size, size);
+      const gradient = ctx.createRadialGradient(size / 2, size / 2, size * 0.12, size / 2, size / 2, size * 0.5);
+      gradient.addColorStop(0, "rgba(77, 166, 255, 0.95)");
+      gradient.addColorStop(0.35, "rgba(39, 132, 255, 0.7)");
+      gradient.addColorStop(1, "rgba(18, 64, 158, 0)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size, size);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.needsUpdate = true;
+    texture.anisotropy = 2;
+    texture.generateMipmaps = false;
+    texture.minFilter = THREE.LinearFilter;
+    texture.wrapS = THREE.ClampToEdgeWrapping;
+    texture.wrapT = THREE.ClampToEdgeWrapping;
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      depthTest: true,
+      opacity: 0.95,
+      toneMapped: false,
+      color: 0x4da6ff,
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.visible = false;
+    sprite.renderOrder = 10;
+    this.scene.add(sprite);
+    this.selectionGlowSprite = sprite;
+    return sprite;
+  }
+
+  updateSelectionGlow() {
+    if (!this.selectedNeuron) {
+      this.hideSelectionGlow();
+      return;
+    }
+    const { layerIndex, neuronIndex } = this.selectedNeuron;
+    const layer = this.layerMeshes[layerIndex];
+    const position = layer?.positions?.[neuronIndex];
+    if (!layer || !position) {
+      this.hideSelectionGlow();
+      return;
+    }
+    const sprite = this.ensureSelectionGlowSprite();
+    sprite.position.copy(position);
+    const baseSize =
+      layer.type === "input"
+        ? this.options.inputNodeSize ?? 0.18
+        : this.options.hiddenNodeRadius ?? 0.22;
+    const scale = Math.max(baseSize * 9, 0.6);
+    sprite.scale.set(scale, scale, 1);
+    sprite.visible = true;
+  }
+
+  hideSelectionGlow() {
+    if (!this.selectionGlowSprite) return;
+    this.selectionGlowSprite.visible = false;
+  }
+
   updateSelectionVisuals() {
     if (!this.selectedNeuron) return;
     if (!this.lastNetworkActivations) return;
     if (!this.selectionConnectionData) {
       this.selectionConnectionData = this.collectSelectionConnectionData();
     }
+    this.updateSelectionGlow();
     const detail = this.buildSelectionDetail();
     this.currentSelectionDetail = detail;
     this.updateSelectedConnectionColors(detail);
