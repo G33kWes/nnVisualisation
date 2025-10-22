@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import math
+import os
+import re
+import shutil
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -55,8 +60,8 @@ class SmallMLP(nn.Module):
 
 
 @dataclass
-class ExportLayer:
-    """Serializable representation of a dense layer."""
+class LayerMetadata:
+    """Lightweight structural description of a dense layer."""
 
     layer_index: int
     type: str
@@ -64,8 +69,15 @@ class ExportLayer:
     activation: str
     weight_shape: tuple[int, int]
     bias_shape: tuple[int]
-    weights: list[list[float]]
-    biases: list[float]
+
+
+@dataclass
+class LayerSnapshot:
+    """Snapshot of a dense layer's parameters."""
+
+    metadata: LayerMetadata
+    weight: torch.Tensor
+    bias: torch.Tensor
 
 
 @dataclass
@@ -80,18 +92,22 @@ class TimelineMilestone:
 
 
 def export_model(
-    model: SmallMLP,
     output_path: Path,
-    hidden_activations: Sequence[str],
-    timeline: Sequence[dict[str, Any]] | None = None,
+    layer_metadata: Sequence[LayerMetadata],
+    timeline: Sequence[dict[str, Any]],
 ) -> None:
-    """Export the model parameters and optional training timeline to JSON."""
-    layers = create_dense_layer_exports(model, hidden_activations)
+    """Write the lightweight network metadata and timeline manifest."""
     payload: dict[str, Any] = {
-        "network": build_network_payload(layers),
+        "version": 2,
+        "dtype": "float16",
+        "weights": {
+            "storage": "per_snapshot_files",
+            "format": "layer_array_v1",
+            "precision": "float16",
+        },
+        "network": build_network_payload(layer_metadata),
+        "timeline": list(timeline),
     }
-    if timeline:
-        payload["timeline"] = timeline
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2))
 
@@ -117,34 +133,108 @@ def parse_hidden_dims(raw: Sequence[int]) -> list[int]:
     return dims
 
 
-def create_dense_layer_exports(model: SmallMLP, activations: Sequence[str]) -> list[ExportLayer]:
-    """Convert the model's dense layers into serialisable export payloads."""
+def capture_layer_snapshots(model: SmallMLP, activations: Sequence[str]) -> list[LayerSnapshot]:
+    """Capture the current dense-layer parameters for export."""
     dense_layers = [m for m in model.net if isinstance(m, nn.Linear)]
-    layers: list[ExportLayer] = []
+    snapshots: list[LayerSnapshot] = []
     for idx, (layer, activation) in enumerate(zip(dense_layers, activations, strict=False)):
-        layers.append(
-            ExportLayer(
-                layer_index=idx,
-                type="dense",
-                name=f"dense_{idx}",
-                activation=activation,
-                weight_shape=tuple(layer.weight.shape),  # type: ignore[arg-type]
-                bias_shape=tuple(layer.bias.shape),  # type: ignore[arg-type]
-                weights=layer.weight.detach().cpu().tolist(),
-                biases=layer.bias.detach().cpu().tolist(),
+        metadata = LayerMetadata(
+            layer_index=idx,
+            type="dense",
+            name=f"dense_{idx}",
+            activation=activation,
+            weight_shape=tuple(int(dim) for dim in layer.weight.shape),
+            bias_shape=tuple(int(dim) for dim in layer.bias.shape),
+        )
+        snapshots.append(
+            LayerSnapshot(
+                metadata=metadata,
+                weight=layer.weight.detach().cpu(),
+                bias=layer.bias.detach().cpu(),
             )
         )
-    return layers
+    return snapshots
 
 
-def build_network_payload(layers: Sequence[ExportLayer]) -> dict[str, Any]:
+def build_network_payload(layers: Sequence[LayerMetadata]) -> dict[str, Any]:
+    if not layers:
+        raise ValueError("Layer metadata must contain at least one dense layer.")
+    architecture = [layers[0].weight_shape[1]] + [layer.bias_shape[0] for layer in layers]
     return {
-        "architecture": [layer.weight_shape[1] for layer in layers] + [layers[-1].weight_shape[0]],
-        "layers": [asdict(layer) for layer in layers],
+        "architecture": architecture,
+        "layers": [
+            {
+                "layer_index": layer.layer_index,
+                "type": layer.type,
+                "name": layer.name,
+                "activation": layer.activation,
+                "weight_shape": list(layer.weight_shape),
+                "bias_shape": list(layer.bias_shape),
+            }
+            for layer in layers
+        ],
         "input_dim": layers[0].weight_shape[1],
-        "output_dim": layers[-1].weight_shape[0],
+        "output_dim": layers[-1].bias_shape[0],
         "normalization": {"mean": MNIST_MEAN, "std": MNIST_STD},
     }
+
+
+def slugify_identifier(value: str) -> str:
+    transformed = re.sub(r"[^a-z0-9]+", "-", value.lower())
+    transformed = transformed.strip("-")
+    return transformed or "snapshot"
+
+
+def tensor_to_base64(tensor: torch.Tensor) -> str:
+    array = tensor.detach().cpu().to(torch.float16).numpy()
+    little_endian = np.ascontiguousarray(array.astype("<f2", copy=False)).view("<u2")
+    data = little_endian.tobytes()
+    return base64.b64encode(data).decode("ascii")
+
+
+def write_snapshot_file(
+    snapshots: Sequence[LayerSnapshot],
+    directory: Path,
+    order: int,
+    identifier: str,
+) -> Path:
+    slug = slugify_identifier(identifier)
+    filename = f"{order:03d}_{slug}.json"
+    path = directory / filename
+    layers_payload = []
+    for snapshot in snapshots:
+        meta = snapshot.metadata
+        layers_payload.append(
+            {
+                "layer_index": meta.layer_index,
+                "name": meta.name,
+                "activation": meta.activation,
+                "weights": {
+                    "shape": list(meta.weight_shape),
+                    "data": tensor_to_base64(snapshot.weight),
+                },
+                "biases": {
+                    "shape": list(meta.bias_shape),
+                    "data": tensor_to_base64(snapshot.bias),
+                },
+            }
+        )
+    payload = {
+        "version": 1,
+        "dtype": "float16",
+        "layers": layers_payload,
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, separators=(",", ":")))
+    return path
+
+
+def to_posix_relative(path: Path, base: Path) -> str:
+    try:
+        relative = path.relative_to(base)
+    except ValueError:
+        relative = Path(os.path.relpath(path, base))
+    return relative.as_posix()
 
 
 def build_default_timeline(dataset_size: int) -> list[TimelineMilestone]:
@@ -323,6 +413,14 @@ def main() -> None:
     # Build activation list: ReLU for every hidden layer, softmax for the output (handled client-side).
     hidden_activations = ["relu"] * len(hidden_dims) + ["linear"]
 
+    args.export_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = args.export_path.parent / args.export_path.stem
+    if snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    export_root = args.export_path.parent.resolve()
+    layer_metadata: list[LayerMetadata] = []
+
     timeline_entries: list[dict[str, Any]] = []
     cumulative_loss = 0.0
     images_seen = 0
@@ -334,10 +432,14 @@ def main() -> None:
     target_epochs = max(args.epochs, required_epochs)
 
     def record_snapshot(milestone: TimelineMilestone) -> None:
-        nonlocal last_eval_accuracy
+        nonlocal last_eval_accuracy, layer_metadata
         accuracy = evaluate(model, test_loader, device)
         last_eval_accuracy = accuracy
-        layers = create_dense_layer_exports(model, hidden_activations)
+        snapshots = capture_layer_snapshots(model, hidden_activations)
+        if not layer_metadata:
+            layer_metadata = [snapshot.metadata for snapshot in snapshots]
+        snapshot_path = write_snapshot_file(snapshots, snapshot_dir, len(timeline_entries), milestone.identifier)
+        weights_rel_path = to_posix_relative(snapshot_path, export_root)
         entry: dict[str, Any] = {
             "id": milestone.identifier,
             "order": len(timeline_entries),
@@ -351,7 +453,11 @@ def main() -> None:
             "metrics": {
                 "test_accuracy": accuracy,
             },
-            "layers": [asdict(layer) for layer in layers],
+            "weights": {
+                "path": weights_rel_path,
+                "dtype": "float16",
+                "format": "layer_array_v1",
+            },
         }
         if milestone.dataset_multiple is not None:
             entry["dataset_multiple"] = milestone.dataset_multiple
@@ -413,7 +519,9 @@ def main() -> None:
         # If training was skipped, at least export the initial snapshot.
         record_snapshot(milestones[0])
 
-    export_model(model, args.export_path, hidden_activations, timeline_entries)
+    if not layer_metadata:
+        raise RuntimeError("Layer metadata could not be captured for export.")
+    export_model(args.export_path, layer_metadata, timeline_entries)
     print(f"Exported weights to {args.export_path.resolve()}")
 
 

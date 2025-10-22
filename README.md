@@ -50,7 +50,7 @@ After training, update `VISUALIZER_CONFIG.weightUrl` in `assets/main.js` if you 
 
 ### Training timeline export
 
-Every exported JSON now includes a `timeline` array spanning 35 checkpoints: densely spaced early snapshots (≈50, 120, 250, 500, 1k, 2k, 3.5k, 5.8k, 8.7k, 13k, 19.5k, 28.5k, 40k images), followed by dataset-multiple milestones from 1× through 50×. The slider at the bottom of the UI lets you swap between these snapshots, showing how weights, activations, and accuracy evolve from random initialisation all the way to 50 full passes over MNIST. Re-export the weights with the updated script to generate fresh timeline data for your own runs.
+Every exported JSON now includes a `timeline` array spanning 35 checkpoints: densely spaced early snapshots (≈50, 120, 250, 500, 1k, 2k, 3.5k, 5.8k, 8.7k, 13k, 19.5k, 28.5k, 40k images), followed by dataset-multiple milestones from 1× through 50×. The JSON manifest stays small; each snapshot’s weights are stored separately as float16-encoded files under `exports/<stem>/NNN_<id>.json`, and the front-end streams them on demand so you can scrub the timeline without downloading the entire 50× run up front. Re-export the weights with the updated script to generate fresh timeline data for your own runs.
 
 ## Notes & Tips
 

@@ -27,13 +27,28 @@ document.addEventListener("DOMContentLoaded", () => {
 async function initializeVisualizer() {
   initializeInfoDialog();
 
-  const definition = await fetchNetworkDefinition(VISUALIZER_CONFIG.weightUrl);
+  const weightDefinitionUrl = new URL(VISUALIZER_CONFIG.weightUrl, window.location.href);
+  const definition = await fetchNetworkDefinition(weightDefinitionUrl.toString());
   if (!definition?.network) {
     throw new Error("Ungültige Netzwerkdefinition.");
   }
 
-  const timelineSnapshots = hydrateTimeline(definition.timeline);
-  const neuralModel = new FeedForwardModel(definition.network);
+  const timelineSnapshots = hydrateTimeline(definition.timeline, {
+    layerMetadata: definition.network.layers,
+    baseUrl: weightDefinitionUrl,
+  });
+  if (!timelineSnapshots.length) {
+    throw new Error("Keine gültigen Timeline-Snapshots gefunden.");
+  }
+  const defaultSnapshotIndex = Math.max(timelineSnapshots.length - 1, 0);
+  const initialSnapshot = timelineSnapshots[defaultSnapshotIndex];
+  const initialLayers = await initialSnapshot.loadLayers();
+
+  const neuralModel = new FeedForwardModel({
+    normalization: definition.network.normalization,
+    architecture: definition.network.architecture,
+    layers: initialLayers,
+  });
   const digitCanvas = new DigitSketchPad(document.getElementById("gridContainer"), 28, 28, {
     brush: VISUALIZER_CONFIG.brush,
   });
@@ -88,22 +103,21 @@ async function initializeVisualizer() {
   });
 
   const timelineController = setupTimelineSlider(timelineSnapshots, {
-    onSnapshotChange(snapshot) {
+    async onSnapshotChange(snapshot) {
       if (!snapshot) return;
-      neuralModel.updateLayers(snapshot.layers);
+      const layers = await snapshot.loadLayers();
+      neuralModel.updateLayers(layers);
       neuralScene.updateNetworkWeights();
       refreshNetworkState();
     },
   });
 
   digitCanvas.setChangeHandler(() => refreshNetworkState());
-  refreshNetworkState();
 
   if (timelineController && typeof timelineController.setActiveIndex === "function") {
-    timelineController.setActiveIndex(timelineSnapshots.length > 0 ? timelineSnapshots.length - 1 : 0, {
-      emit: true,
-      force: false,
-    });
+    await timelineController.setActiveIndex(defaultSnapshotIndex, { emit: true, force: true });
+  } else {
+    refreshNetworkState();
   }
 }
 
@@ -318,48 +332,194 @@ function renderErrorMessage(message) {
   }
 }
 
-function hydrateTimeline(rawTimeline) {
+function resolveRelativeUrl(base, relativePath) {
+  try {
+    const baseUrl = base instanceof URL ? base : new URL(base, window.location.href);
+    return new URL(relativePath, baseUrl).toString();
+  } catch (error) {
+    console.warn("Konnte relative URL nicht auflösen:", relativePath, error);
+    return null;
+  }
+}
+
+function decodeBase64ToUint8Array(base64) {
+  if (typeof atob === "function") {
+    const binary = atob(base64);
+    const length = binary.length;
+    const bytes = new Uint8Array(length);
+    for (let i = 0; i < length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  }
+  if (typeof Buffer === "function") {
+    return Uint8Array.from(Buffer.from(base64, "base64"));
+  }
+  throw new Error("Base64-Dekodierung ist in dieser Umgebung nicht verfügbar.");
+}
+
+function float16ToFloat32(value) {
+  const sign = (value & 0x8000) >> 15;
+  const exponent = (value & 0x7c00) >> 10;
+  const fraction = value & 0x03ff;
+
+  let result;
+  if (exponent === 0) {
+    if (fraction === 0) {
+      result = 0;
+    } else {
+      result = (fraction / 0x400) * Math.pow(2, -14);
+    }
+  } else if (exponent === 0x1f) {
+    result = fraction === 0 ? Number.POSITIVE_INFINITY : Number.NaN;
+  } else {
+    result = (1 + fraction / 0x400) * Math.pow(2, exponent - 15);
+  }
+
+  return sign === 1 ? -result : result;
+}
+
+function decodeFloat16Base64(base64, expectedLength) {
+  const bytes = decodeBase64ToUint8Array(base64);
+  if (bytes.byteLength % 2 !== 0) {
+    throw new Error("Float16-Daten haben eine ungültige Länge.");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const length = bytes.byteLength / 2;
+  if (Number.isFinite(expectedLength) && expectedLength > 0 && length !== expectedLength) {
+    throw new Error(
+      `Erwartete ${expectedLength} Float16-Werte, erhalten wurden jedoch ${length}.`,
+    );
+  }
+  const result = new Float32Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const half = view.getUint16(index * 2, true);
+    result[index] = float16ToFloat32(half);
+  }
+  return result;
+}
+
+function decodeWeightMatrix(encoded, shape) {
+  const rows = Math.max(0, Number(shape?.[0]) || 0);
+  const cols = Math.max(0, Number(shape?.[1]) || 0);
+  if (rows === 0 || cols === 0) {
+    return [];
+  }
+  const flat = decodeFloat16Base64(encoded, rows * cols);
+  const result = [];
+  for (let row = 0; row < rows; row += 1) {
+    const start = row * cols;
+    const end = start + cols;
+    result.push(flat.slice(start, end));
+  }
+  return result;
+}
+
+function normaliseShape(shape, fallback = []) {
+  const source = Array.isArray(shape) ? shape : fallback;
+  if (!Array.isArray(source)) return [];
+  return source.map((value) => Number(value) || 0);
+}
+
+function normaliseLayerMetadata(layer, index) {
+  const layerIndex = Number.isFinite(layer?.layer_index) ? Number(layer.layer_index) : index;
+  const weightShape = normaliseShape(layer?.weight_shape);
+  const biasShape = normaliseShape(layer?.bias_shape);
+  const resolvedWeightShape =
+    weightShape.length === 2 ? weightShape : [biasShape[0] ?? 0, weightShape[1] ?? 0];
+  const resolvedBiasShape = biasShape.length >= 1 ? biasShape : [resolvedWeightShape[0] ?? 0];
+  return {
+    layerIndex,
+    name: typeof layer?.name === "string" ? layer.name : `dense_${layerIndex}`,
+    activation: typeof layer?.activation === "string" ? layer.activation : "relu",
+    weightShape: resolvedWeightShape,
+    biasShape: resolvedBiasShape,
+  };
+}
+
+function normaliseWeightsDescriptor(descriptor, baseUrl) {
+  if (!descriptor || typeof descriptor !== "object") return null;
+  const path = typeof descriptor.path === "string" ? descriptor.path : null;
+  if (!path) return null;
+  const url = resolveRelativeUrl(baseUrl, path);
+  if (!url) return null;
+  return {
+    path,
+    url,
+    dtype: typeof descriptor.dtype === "string" ? descriptor.dtype : "float16",
+    format: typeof descriptor.format === "string" ? descriptor.format : "layer_array_v1",
+  };
+}
+
+async function fetchSnapshotPayload(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error(`Snapshot konnte nicht geladen werden (${response.status})`);
+  }
+  return response.json();
+}
+
+function decodeSnapshotLayers(payload, layerMetadata) {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.layers)) {
+    throw new Error("Snapshot-Datei enthält keine gültigen Layerdaten.");
+  }
+
+  return layerMetadata.map((meta, index) => {
+    const layerPayload =
+      payload.layers[index] ??
+      payload.layers.find((layer) => Number(layer?.layer_index) === meta.layerIndex);
+    if (!layerPayload) {
+      throw new Error(`Snapshot fehlt Layer ${meta.layerIndex}.`);
+    }
+    const weightsInfo = layerPayload.weights ?? {};
+    const biasesInfo = layerPayload.biases ?? {};
+    if (typeof weightsInfo.data !== "string" || typeof biasesInfo.data !== "string") {
+      throw new Error("Snapshot-Layer enthält keine kodierten Gewichte.");
+    }
+
+    const weightShape = normaliseShape(weightsInfo.shape, meta.weightShape);
+    const biasShape = normaliseShape(biasesInfo.shape, meta.biasShape);
+    if (weightShape.length !== 2) {
+      throw new Error("Snapshot-Layer hat eine ungültige Gewichtsdimension.");
+    }
+    if (biasShape.length === 0) {
+      throw new Error("Snapshot-Layer hat eine ungültige Bias-Dimension.");
+    }
+
+    const weights = decodeWeightMatrix(weightsInfo.data, weightShape);
+    const biases = decodeFloat16Base64(biasesInfo.data, biasShape[0]);
+    return {
+      name: typeof layerPayload.name === "string" ? layerPayload.name : meta.name,
+      activation:
+        typeof layerPayload.activation === "string" ? layerPayload.activation : meta.activation,
+      weights,
+      biases,
+    };
+  });
+}
+
+function hydrateTimeline(rawTimeline, options = {}) {
   if (!Array.isArray(rawTimeline)) return [];
+
+  const layerMetadataSource = Array.isArray(options.layerMetadata) ? options.layerMetadata : [];
+  if (layerMetadataSource.length === 0) return [];
+  const layerMetadata = layerMetadataSource.map((layer, index) =>
+    normaliseLayerMetadata(layer, index),
+  );
+
+  const baseUrl = options.baseUrl ?? window.location.href;
+
   return rawTimeline
     .map((entry, index) => {
-      if (!entry || !Array.isArray(entry.layers)) return null;
+      if (!entry || typeof entry !== "object") return null;
 
-      const layers = entry.layers
-        .map((layer, layerIndex) => {
-          if (!layer) return null;
-          const weightsSource = Array.isArray(layer.weights) ? layer.weights : null;
-          const biasesSource = layer.biases;
-          if (!weightsSource || weightsSource.length === 0) return null;
-          const weights = weightsSource.map((row) => {
-            if (row instanceof Float32Array) {
-              return new Float32Array(row);
-            }
-            if (Array.isArray(row)) {
-              return Float32Array.from(row);
-            }
-            throw new Error("Timeline snapshot contains an invalid weight row.");
-          });
-          let biases;
-          if (biasesSource instanceof Float32Array) {
-            biases = new Float32Array(biasesSource);
-          } else if (Array.isArray(biasesSource)) {
-            biases = Float32Array.from(biasesSource);
-          } else {
-            biases = new Float32Array(weights[0]?.length ?? 0);
-          }
-          return {
-            name: typeof layer.name === "string" ? layer.name : `dense_${layerIndex}`,
-            activation: typeof layer.activation === "string" ? layer.activation : "relu",
-            weights,
-            biases,
-          };
-        })
-        .filter(Boolean);
-      if (!layers.length) return null;
+      const weights = normaliseWeightsDescriptor(entry.weights, baseUrl);
+      if (!weights?.url) return null;
 
       const metrics = typeof entry.metrics === "object" && entry.metrics !== null ? entry.metrics : {};
-      return {
+      const snapshot = {
         id: typeof entry.id === "string" ? entry.id : `snapshot_${index}`,
+        order: Number.isFinite(entry.order) ? Number(entry.order) : index,
         label: typeof entry.label === "string" ? entry.label : `Snapshot ${index + 1}`,
         description: typeof entry.description === "string" ? entry.description : "",
         kind: typeof entry.kind === "string" ? entry.kind : "approx",
@@ -372,8 +532,18 @@ function hydrateTimeline(rawTimeline) {
           testAccuracy: Number.isFinite(metrics.test_accuracy) ? metrics.test_accuracy : null,
           avgTrainingLoss: Number.isFinite(metrics.avg_training_loss) ? metrics.avg_training_loss : null,
         },
-        layers,
+        weights,
+        layers: null,
+        async loadLayers() {
+          if (Array.isArray(this.layers) && this.layers.length) {
+            return this.layers;
+          }
+          const payload = await fetchSnapshotPayload(this.weights.url);
+          this.layers = decodeSnapshotLayers(payload, layerMetadata);
+          return this.layers;
+        },
       };
+      return snapshot;
     })
     .filter(Boolean);
 }
@@ -452,13 +622,36 @@ function setupTimelineSlider(timelineSnapshots, options = {}) {
 
   const state = {
     activeIndex: null,
+    loading: false,
   };
 
-  const setActiveIndex = (index, { emit = false, force = false } = {}) => {
-    if (!Number.isFinite(index)) return;
+  const setLoading = (value) => {
+    state.loading = Boolean(value);
+    if (state.loading) {
+      slider.disabled = true;
+      overlay.classList.add("timeline-overlay--loading");
+    } else {
+      slider.disabled = timelineSnapshots.length <= 1;
+      overlay.classList.remove("timeline-overlay--loading");
+    }
+  };
+
+  const applySnapshotChange = async (snapshot, safeIndex) => {
+    if (typeof options.onSnapshotChange !== "function") return;
+    setLoading(true);
+    try {
+      await options.onSnapshotChange(snapshot, safeIndex);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const setActiveIndex = async (index, { emit = false, force = false } = {}) => {
+    if (!Number.isFinite(index)) return null;
     const safeIndex = Math.round(index);
-    if (safeIndex < 0 || safeIndex >= timelineSnapshots.length) return;
-    if (!force && state.activeIndex === safeIndex) return;
+    if (safeIndex < 0 || safeIndex >= timelineSnapshots.length) return null;
+    if (!force && state.activeIndex === safeIndex) return timelineSnapshots[safeIndex];
+    if (state.loading && !force) return null;
 
     state.activeIndex = safeIndex;
     slider.value = String(safeIndex);
@@ -471,27 +664,36 @@ function setupTimelineSlider(timelineSnapshots, options = {}) {
     metricsElement.textContent = metricsText || "";
     metricsElement.classList.toggle("timeline-metrics--empty", metricsText.length === 0);
 
-    if (emit && typeof options.onSnapshotChange === "function") {
-      options.onSnapshotChange(snapshot, safeIndex);
+    if (emit) {
+      await applySnapshotChange(snapshot, safeIndex);
     }
+
+    return snapshot;
   };
 
   slider.addEventListener("input", (event) => {
     const nextIndex = Number(event.target.value);
     if (Number.isNaN(nextIndex)) return;
-    setActiveIndex(nextIndex, { emit: true });
+    setActiveIndex(nextIndex, { emit: true }).catch((error) => {
+      console.error("Fehler beim Aktualisieren des Snapshots:", error);
+    });
   });
 
   slider.addEventListener("change", (event) => {
     const nextIndex = Number(event.target.value);
     if (Number.isNaN(nextIndex)) return;
-    setActiveIndex(nextIndex, { emit: true });
+    setActiveIndex(nextIndex, { emit: true }).catch((error) => {
+      console.error("Fehler beim Aktualisieren des Snapshots:", error);
+    });
   });
 
   return {
     setActiveIndex,
     get activeIndex() {
       return state.activeIndex;
+    },
+    get loading() {
+      return state.loading;
     },
   };
 }

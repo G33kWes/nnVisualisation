@@ -1,0 +1,85 @@
+{
+  "version": 2,
+  "dtype": "float16",
+  "weights": {
+    "storage": "per_snapshot_files",
+    "format": "layer_array_v1",
+    "precision": "float16"
+  },
+  "network": {
+    "architecture": [
+      784,
+      128,
+      64,
+      10
+    ],
+    "layers": [
+      {
+        "layer_index": 0,
+        "type": "dense",
+        "name": "dense_0",
+        "activation": "relu",
+        "weight_shape": [
+          128,
+          784
+        ],
+        "bias_shape": [
+          128
+        ]
+      },
+      {
+        "layer_index": 1,
+        "type": "dense",
+        "name": "dense_1",
+        "activation": "relu",
+        "weight_shape": [
+          64,
+          128
+        ],
+        "bias_shape": [
+          64
+        ]
+      },
+      {
+        "layer_index": 2,
+        "type": "dense",
+        "name": "dense_2",
+        "activation": "linear",
+        "weight_shape": [
+          10,
+          64
+        ],
+        "bias_shape": [
+          10
+        ]
+      }
+    ],
+    "input_dim": 784,
+    "output_dim": 10,
+    "normalization": {
+      "mean": 0.1307,
+      "std": 0.3081
+    }
+  },
+  "timeline": [
+    {
+      "id": "initial",
+      "order": 0,
+      "label": "Initial weights",
+      "kind": "initial",
+      "target_images": 0,
+      "images_seen": 0,
+      "batches_seen": 0,
+      "dataset_passes": 0.0,
+      "description": "0 images processed (random initialisation)",
+      "metrics": {
+        "test_accuracy": 0.062
+      },
+      "weights": {
+        "path": "sample_mlp_weights/000_initial.json",
+        "dtype": "float16",
+        "format": "layer_array_v1"
+      }
+    }
+  ]
+}
